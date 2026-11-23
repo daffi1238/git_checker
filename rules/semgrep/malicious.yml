@@ -1,0 +1,71 @@
+rules:
+  - id: py-exec-decoded
+    languages: [python]
+    severity: ERROR
+    message: exec/eval de contenido decodificado u ofuscado
+    pattern-either:
+      - pattern: exec(<... base64.b64decode(...) ...>)
+      - pattern: eval(<... base64.b64decode(...) ...>)
+      - pattern: exec(<... zlib.decompress(...) ...>)
+      - pattern: exec(<... codecs.decode(...) ...>)
+      - pattern: exec(<... marshal.loads(...) ...>)
+      - pattern: exec(<... bytes.fromhex(...) ...>)
+
+  - id: py-exec-remote
+    languages: [python]
+    severity: ERROR
+    message: exec/eval de contenido descargado de la red
+    pattern-either:
+      - pattern: exec(<... requests.get(...) ...>)
+      - pattern: exec(<... urllib.request.urlopen(...) ...>)
+      - pattern: eval(<... requests.get(...) ...>)
+      - pattern: exec(<... urlopen(...) ...>)
+
+  - id: py-setup-network
+    languages: [python]
+    severity: WARNING
+    message: setup.py hace red o lanza procesos durante la instalación
+    paths:
+      include: ["**/setup.py"]
+    pattern-either:
+      - pattern: requests.$F(...)
+      - pattern: urllib.request.urlopen(...)
+      - pattern: socket.socket(...)
+      - pattern: subprocess.$F(...)
+      - pattern: os.system(...)
+
+  - id: js-eval-decoded
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: eval/Function de contenido decodificado
+    pattern-either:
+      - pattern: eval(<... atob(...) ...>)
+      - pattern: eval(<... Buffer.from(...) ...>)
+      - pattern: new Function(..., <... atob(...) ...>)
+      - pattern: new Function(..., <... Buffer.from(...) ...>)
+      - pattern: Function(..., <... Buffer.from(...) ...>)
+
+  - id: js-eval-remote
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: eval/Function del cuerpo de una respuesta HTTP (descarga y ejecuta código)
+    pattern-either:
+      - pattern: eval($R.data)
+      - pattern: new Function(..., $R.data)
+      - pattern: new Function(..., $R.data)(...)
+      - pattern: eval(await $R.text())
+      - pattern: new Function(..., await $R.text())
+
+  - id: js-child-process-network
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: child_process ejecuta un comando de red
+    patterns:
+      - pattern-either:
+          - pattern: require('child_process').$F($CMD, ...)
+          - pattern: $CP.exec($CMD, ...)
+          - pattern: $CP.execSync($CMD, ...)
+          - pattern: $CP.spawn($CMD, ...)
+      - metavariable-regex:
+          metavariable: $CMD
+          regex: (?i).*(curl|wget|powershell|bash -c|nc ).*

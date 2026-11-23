@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Shim de git (git_checker). Instalado como ~/.local/bin/git, delante de /usr/bin en el PATH.
+# Intercepta `git clone` cuando lo usa una persona (hay TTY) o Claude Code (CLAUDECODE=1)
+# y lo manda a git-safe-clone. Todo lo demás va directo al git real.
+#   GIT_CHECK=0        → nunca interceptar
+#   GIT_CHECK_FORCE=1  → interceptar también sin TTY (scripts)
+SELF=$(readlink -f "$0")
+
+real=""
+IFS=: read -ra _dirs <<<"$PATH"
+for d in "${_dirs[@]}"; do
+  c="$d/git"
+  if [[ -x $c && $(readlink -f "$c") != "$SELF" ]]; then real=$c; break; fi
+done
+[[ -n $real ]] || real=/usr/bin/git
+export GIT_CHECK_REAL_GIT="$real"
+
+intercept() {
+  [[ ${GIT_CHECK:-1} != 0 ]] || return 1
+  [[ -t 0 || -t 2 || -n ${CLAUDECODE:-} || -n ${GIT_CHECK_FORCE:-} ]]
+}
+
+if intercept; then
+  # saltar opciones globales para encontrar el subcomando
+  args=("$@"); i=0; cdir=""; globals=()
+  while ((i < ${#args[@]})); do
+    a=${args[i]}
+    case $a in
+      -C) cdir=${args[i+1]:-}; ((i+=2)) ;;
+      -c|--git-dir|--work-tree|--namespace|--exec-path|--config-env) globals+=("$a" "${args[i+1]:-}"); ((i+=2)) ;;
+      --*=*|-p|-P|--paginate|--no-pager|--bare|--no-replace-objects|--literal-pathspecs|--no-optional-locks) globals+=("$a"); ((i+=1)) ;;
+      *) break ;;
+    esac
+  done
+  if [[ ${args[i]:-} == clone ]]; then
+    if ((${#globals[@]})); then
+      echo "git_checker: 'git ${globals[*]} clone' no soportado; usa 'git clone …' (o GIT_CHECK=0 para saltarte la revisión)" >&2
+      exit 2
+    fi
+    [[ -n $cdir ]] && { cd -- "$cdir" || exit 128; }
+    exec "$(dirname "$SELF")/git-safe-clone" "${args[@]:i+1}"
+  fi
+fi
+exec "$real" "$@"
