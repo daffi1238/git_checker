@@ -106,6 +106,11 @@ def build_payload(repo: Repo, findings, instr_files, exec_files) -> str:
     lines = [f"[{f['severity']}] {f['rule']} {f['file']}:{f['line'] or ''} — {f['message']}"
              + (f"\n    > {f['snippet']}" if f.get("snippet") else "") for f in relevant]
     add(_section("STATIC FINDINGS", "\n".join(lines) or "(none)"))
+    # Comentarios de código dirigidos a agentes: aunque sean "info", el LLM ve el texto (no el fichero entero)
+    cc = [f for f in findings if f["rule"] in ("code-comment-injection", "comment-zero-width")][:40]
+    if cc:
+        add(_section("CODE COMMENTS THAT MENTION AI AGENTS (judge intent: benign docs vs. injection)",
+                     "\n".join(f"{f['file']}:{f['line']} [{f['severity']}]\n    > {f['snippet']}" for f in cc)))
 
     wanted = list(dict.fromkeys(
         exec_files + instr_files +

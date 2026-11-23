@@ -5,7 +5,7 @@ import os
 import posixpath
 import re
 
-from .common import (BIDI_RE, TAG_RE, Repo, finding, line_of, load_json_loose,
+from .common import (BIDI_RE, TAG_RE, VS_RUN_RE, ZW_RE, Repo, finding, line_of, load_json_loose,
                      max_sev, snippet_at)
 
 PHASE = "1-codigo"
@@ -52,7 +52,7 @@ PATTERNS = [
      r"(?i)discord(app)?\.com/api/webhooks|api\.telegram\.org/bot|hooks\.slack\.com/services|"
      r"webhook\.site|pipedream\.net|requestbin|\bngrok(-free)?\.(io|app)|trycloudflare\.com|"
      r"pastebin\.com/raw|transfer\.sh|interact\.sh|\boast\.(pro|live|site|online|fun|me)\b|burpcollaborator|"
-     r"\b(\d{1,3}\.){3}\d{1,3}:\d{2,5}\b",
+     r"\b(?!(?:127|10|0)\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|169\.254\.)(\d{1,3}\.){3}\d{1,3}:\d{2,5}\b",  # IP pública:puerto
      "warn", "Endpoint típico de exfiltración / C2"),
     ("hidden-offscreen", r"\S[ \t]{150,}\S", "warn",
      "Código desplazado fuera de pantalla con espacios (técnica para esconder payloads)"),
@@ -154,6 +154,17 @@ def scan(repo: Repo) -> list[dict]:
                 _add(out, counts, finding("info" if TESTDOC_DIR_RE.search(rel) else "warn", PHASE, "trojan-source", rel,
                                           "Caracteres bidi Unicode en código (Trojan Source)",
                                           line_of(text, m.start()), snippet_at(text, m.start())))
+            zw = ZW_RE.findall(text)
+            if zw:
+                _add(out, counts, finding("info", PHASE, "zero-width-code", rel,
+                                          f"Caracteres de ancho cero en código ({len(zw)})",
+                                          line_of(text, text.find(zw[0])), snippet_at(text, text.find(zw[0]))))
+        vs = max(VS_RUN_RE.findall(text), key=len, default="")
+        if vs:
+            i = text.find(vs)
+            _add(out, counts, finding("block" if len(vs) >= 16 else "warn", PHASE, "unicode-variation-payload", rel,
+                                      f"Racha invisible de {len(vs)} selectores de variación Unicode (payload oculto, técnica GlassWorm)",
+                                      line_of(text, i), snippet_at(text, i)))
         m = TAG_RE.search(text)
         if m:
             _add(out, counts, finding("block", PHASE, "unicode-tags", rel,

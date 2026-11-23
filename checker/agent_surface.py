@@ -5,6 +5,7 @@ import os
 import posixpath
 import re
 
+from . import code_comments
 from .common import (BIDI_RE, TAG_RE, ZW_RE, Repo, finding, line_of, load_json_loose,
                      snippet_at)
 
@@ -328,4 +329,6 @@ def scan(repo: Repo) -> tuple[list[dict], list[str], list[str]]:
                 out.append(finding(s, PHASE, f"inject-{rid}", rel, msg, line_of(text, m.start()),
                                    snippet_at(text, m.start())))
 
+    # ---- comentarios en código (#, //, /* */, docstrings, <!-- --> en html/vue/jsx…)
+    out += code_comments.scan(repo, instr_set | set(semi))
     return out, sorted(set(instr)), execcfg

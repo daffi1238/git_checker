@@ -78,13 +78,17 @@ git clone  →  ~/.local/bin/git (shim)  →  git-safe-clone
      rechaza --upload-pack / --template / -c peligrosos
   1. código: install hooks (npm, setup.py, pyproject), .vscode folderOpen, devcontainer, direnv,
      ofuscación y payloads ocultos con espacios, curl|sh, reverse shells, robo de credenciales/wallets,
-     endpoints de exfiltración, binarios, Trojan Source
+     endpoints de exfiltración, binarios, Trojan Source, payloads invisibles con selectores de
+     variación Unicode (GlassWorm)
      + semgrep (rules/semgrep) + guarddog (npm/pypi) + osv-scanner (paquetes MAL-* conocidos)
   2. agentes: CLAUDE.md (+@imports, incluidos los que salen del repo), .claude/settings*.json (hooks,
      env ANTHROPIC_BASE_URL/proxies/OTEL, apiKeyHelper, statusLine, permisos, bypassPermissions),
      .mcp.json, commands/skills/agents (!`…`, allowed-tools), AGENTS.md/.cursorrules/copilot/…,
      Unicode invisible (TAG/zero-width/bidi), comentarios HTML ocultos, prompt injection,
      imágenes markdown con datos en la URL
+     + comentarios de código (#, //, /* */, docstrings, <!-- --> en html/vue/jsx…, --) que SE DIRIGEN
+     a un agente ("Claude: …", "If you are an AI…", "Note for AI assistants", "agents must run…") y
+     piden algo de riesgo justo detrás (curl|sh, leer ~/.ssh o .env, enviar datos fuera, ocultarlo)
   3. Opus vía `claude -p` SIN herramientas (--tools "", sin MCP, sin settings, cwd vacío);
      el repo va como datos delimitados por un token aleatorio; salida con JSON Schema
 ```
@@ -111,6 +115,7 @@ escrituras en `authorized_keys`. Las claves se detectan por su nombre real (list
 python3 -I tests/make_fixtures.py /tmp/fx      # genera los repos 'evil' (inerte) y 'benign'
 GIT_CHECK_NO_LLM=1 bin/git-safe-clone --scan /tmp/fx/evil     # → BLOCK (rc=20)
 GIT_CHECK_NO_LLM=1 bin/git-safe-clone --scan /tmp/fx/benign   # → OK (rc=0)
+GIT_CHECK_NO_LLM=1 bin/git-safe-clone --scan /tmp/fx/comments # → BLOCK solo por comentarios en código
 ```
 
 Los fixtures se generan en tiempo de ejecución para que este repo no contenga un `CLAUDE.md`
@@ -120,6 +125,10 @@ malicioso que Claude Code pudiera cargar al trabajar aquí.
 
 - Es heurístico. Un atacante decidido puede esquivar las reglas y, con menos probabilidad, también al LLM.
   Es una capa más, no un sustituto del sandbox ni de las reglas de permisos de tu agente.
+- Los comentarios se extraen con regex, no con un parser. Para no ahogar en ruido los repos de IA
+  (SDKs, langchain…), un comentario que solo *habla* de agentes no cuenta; tiene que *dirigirse* a uno.
+  Una inyección redactada como prosa neutra puede pasar el filtro determinista. Para eso está Opus,
+  que recibe aparte los comentarios sospechosos aunque sean de nivel info.
 - Solo analiza lo clonado. Quedan fuera los submódulos, las dependencias que se instalen después y
   el código que se descargue en tiempo de ejecución.
 - `gh repo clone`, los IDEs y cualquier herramienta que llame a `/usr/bin/git` por ruta absoluta no

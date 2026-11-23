@@ -19,6 +19,8 @@ SKIP_DIRS = {".git"}
 TAG_RE = re.compile("[\U000E0000-\U000E007F]+")          # "ASCII smuggling" invisible
 ZW_RE = re.compile("[​-‍⁠-⁤᠎­]")
 BIDI_RE = re.compile("[‪-‮⁦-⁩‎‏؜]")
+# Rachas de selectores de variación: no se ven y sirven para esconder payloads (técnica GlassWorm)
+VS_RUN_RE = re.compile("[\uFE00-\uFE0F\U000E0100-\U000E01EF]{4,}")
 # Controles C0/C1 (salvo \t \n \r): evitan inyección de secuencias ANSI en la terminal
 CTRL_RE = re.compile("[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]")
 
@@ -30,6 +32,7 @@ def decode_tags(run: str) -> str:
 def reveal(text: str) -> str:
     """Hace visible todo lo invisible/peligroso para mostrarlo a humanos o al LLM."""
     text = TAG_RE.sub(lambda m: f'⟦OCULTO-TAGS:"{decode_tags(m.group())}"⟧', text)
+    text = VS_RUN_RE.sub(lambda m: f"⟦OCULTO-VS x{len(m.group())}⟧", text)
     text = ZW_RE.sub(lambda m: f"⟦ZW U+{ord(m.group()):04X}⟧", text)
     text = BIDI_RE.sub(lambda m: f"⟦BIDI U+{ord(m.group()):04X}⟧", text)
     text = CTRL_RE.sub(lambda m: f"⟦CTRL 0x{ord(m.group()):02X}⟧", text)
