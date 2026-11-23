@@ -66,7 +66,29 @@ git-safe-clone --release ~/.cache/git-checker/quarantine/<id> [--neutralize]
 hallazgos (`.claude/`, `.mcp.json`, `CLAUDE.md`, `.vscode/tasks.json`, `.devcontainer`, `.envrc`, …).
 Los informes se guardan en `~/.local/share/git-checker/reports/`.
 
-Variables: `GIT_CHECK_NO_LLM=1` (sin fase 3), `GIT_CHECK_NO_EXTERNAL=1` (sin semgrep/guarddog/osv),
+### Segunda opinión con un LLM local (opcional)
+
+Cualquier servidor con API compatible con OpenAI (`/v1/chat/completions`): llama.cpp server, vLLM,
+Ollama, LM Studio… Se ejecuta **en paralelo** con Opus, así que el tiempo total es el del más lento.
+
+```bash
+mkdir -p ~/.config/git-checker
+install -m 600 ~/git_checker/local-llm.env.example ~/.config/git-checker/local-llm.env
+$EDITOR ~/.config/git-checker/local-llm.env     # URL, modelo y token
+```
+
+- Por defecto pesa como **segunda opinión**. Los modelos pequeños marcan de más, así que su BLOCK sube
+  el veredicto como mucho a WARN (te pregunta) y su WARN es solo informativo. Con
+  `GIT_CHECK_LOCAL_WEIGHT=full` pesa igual que Opus.
+- `GIT_CHECK_NO_OPUS=1` deja **solo** el modelo local. Pasa a ser el revisor principal: endurece del
+  todo y, si falla, el mínimo es WARN.
+- Igual que con Opus: sin herramientas, el repo va como datos delimitados y el modelo solo puede
+  endurecer. Si una inyección lo engaña y responde "ok", no relaja nada.
+- **Contexto:** con 4096 tokens solo ve unos 5.000 caracteres del repo (el payload se ajusta solo al
+  `n_ctx` que devuelve el servidor). Para que sea útil, arranca el servidor con más contexto, por ejemplo
+  `llama-server -c 32768`.
+
+Variables: `GIT_CHECK_NO_LLM=1` (sin fase 3), `GIT_CHECK_NO_OPUS=1` (solo LLM local), `GIT_CHECK_NO_EXTERNAL=1` (sin semgrep/guarddog/osv),
 `GIT_CHECK_MODEL=opus`, `GIT_CHECK_LLM_TIMEOUT=300`, `GIT_CHECK_NONINTERACTIVE=1`,
 `GIT_CHECK_FORCE=1` (interceptar también en scripts sin TTY), `GIT_CHECK_QUARANTINE`, `GIT_CHECK_REPORTS`.
 
@@ -91,6 +113,7 @@ git clone  →  ~/.local/bin/git (shim)  →  git-safe-clone
      piden algo de riesgo justo detrás (curl|sh, leer ~/.ssh o .env, enviar datos fuera, ocultarlo)
   3. Opus vía `claude -p` SIN herramientas (--tools "", sin MCP, sin settings, cwd vacío);
      el repo va como datos delimitados por un token aleatorio; salida con JSON Schema
+     + (opcional, en paralelo) LLM local por API OpenAI como segunda opinión
 ```
 
 - El LLM **solo puede endurecer** el veredicto determinista, nunca relajarlo. Si el LLM falla, el

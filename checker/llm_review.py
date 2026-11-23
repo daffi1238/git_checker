@@ -88,8 +88,9 @@ def _section(title, body):
     return f"\n===== {title} =====\n{body}\n"
 
 
-def build_payload(repo: Repo, findings, instr_files, exec_files) -> str:
+def build_payload(repo: Repo, findings, instr_files, exec_files, total: int = TOTAL, per_file: int = PER_FILE) -> str:
     parts, used = [], 0
+    TOTAL, PER_FILE = total, per_file  # noqa: N806 (límites por llamada: el LLM local tiene menos contexto)
 
     def add(s):
         nonlocal used
