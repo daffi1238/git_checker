@@ -14,6 +14,7 @@ Entry points (python3 -I gitcheck.py sentinel <cmd> …):
   hook               Claude Code UserPromptSubmit hook (JSON on stdin/stdout)
   ack <dir>          accept the current verdict for <dir> after reviewing it
   trust|untrust <dir>, status <dir>, rescan <dir>
+  baseline <dir>…    accept the current state of directories you already own (only later changes count)
   record <dir> <result.json> <acked:ok|warn|block|-> [report]     (used by git-safe-clone)
   cache-get <sha> <out.json> <need_llm:0|1> / cache-put <sha> <result.json> <report> <llm:0|1>
 """
@@ -232,8 +233,14 @@ def assess(path: str, log=None, budget: int = 0) -> dict:
     if root in (HOME, "/") or not os.path.isdir(root):
         return {"status": "skipped", "root": root, "why": "home or filesystem root"}
     sig = signature(root)
-    if sig is None:
-        return {"status": "skipped", "root": root, "why": f"more than {MAX_FILES} files"}
+    if sig is None:  # too many files to watch: say so once instead of skipping silently
+        st = load_state(root) or {}
+        if st.get("verdict") != "unchecked" or st.get("sig") is not None:
+            st = {"root": root, "version": VERSION, "sig": None, "verdict": "unchecked", "acked": None,
+                  "findings": [], "report": None, "notified": None, "source": "sentinel-too-many-files"}
+            save_state(st)
+        return {"status": "unchecked", "root": root, "notified": st.get("notified"), "findings": [],
+                "why": f"more than {MAX_FILES} files"}
     st = load_state(root)
     if st and st.get("version") == VERSION and st.get("sig") == sig:
         return {"status": st["verdict"], "root": root, "acked": st.get("acked"), "findings": st.get("findings", []),
@@ -408,7 +415,8 @@ def cmd_hook() -> int:
             st["notified"] = True
             save_state(st)
         print(json.dumps({"systemMessage":
-            f"git_checker: {r['root']} is too big to check within the prompt hook ({BUDGET}s); it was NOT checked. "
+            f"git_checker: {r['root']} is too big to check within the prompt hook "
+            f"({r.get('why') or str(BUDGET) + 's time budget'}); it was NOT checked. "
             f"Run the full check in a terminal:  git-safe-clone --rescan {r['root']}  (or --trust it)"}))
         return 0
     if not needs_attention(r):
@@ -449,6 +457,13 @@ def main(argv: list[str]) -> int:
         return cmd_precheck(args[0] if args else ".")
     if cmd == "ack":
         return cmd_ack(args[0] if args else ".")
+    if cmd == "baseline":  # accept the CURRENT state of directories you already own; only later changes count
+        for d in args or ["."]:
+            r = assess(d, budget=BUDGET)
+            if r["status"] in ("warn", "block"):
+                set_ack(r["root"], r["status"])
+            print(f"{r['status']:9} {'(accepted) ' if r['status'] in ('warn', 'block') else ''}{r['root']}")
+        return 0
     if cmd in ("trust", "untrust"):
         set_trust(args[0] if args else ".", cmd == "trust")
         return 0

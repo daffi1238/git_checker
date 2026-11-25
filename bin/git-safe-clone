@@ -10,6 +10,7 @@
 #   git-safe-clone --ack <dir>                  accept the current WARN/BLOCK of <dir> after review
 #   git-safe-clone --trust|--untrust <dir>      never/again check <dir> with the sentinel
 #   git-safe-clone --status <dir> | --rescan <dir>
+#   git-safe-clone --baseline <dir>…           accept the current state of directories you already own
 #
 # Env: GIT_CHECK_NO_LLM=1 (no phase 3), GIT_CHECK_NO_EXTERNAL=1 (no semgrep/guarddog/osv),
 #      GIT_CHECK_MODEL (opus), GIT_CHECK_NO_CACHE=1 (ignore the per-commit verdict cache),
@@ -94,7 +95,7 @@ analyze() {  # analyze <dir> <name> <json> <report>
 
 # ------------------------------------------------------------------ subcommands
 case ${1:-} in
-  ""|-h|--help) sed -n '2,18p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  ""|-h|--help) sed -n '2,19p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
   --list) ls -1t "$QDIR" 2>/dev/null; exit 0 ;;
   --scan)
     [[ -d ${2:-} ]] || die "usage: --scan <dir>"
@@ -112,6 +113,7 @@ case ${1:-} in
   --untrust) exec "${SENTINEL[@]}" untrust "${2:-.}" ;;
   --status) exec "${SENTINEL[@]}" status "${2:-.}" ;;
   --rescan) exec "${SENTINEL[@]}" rescan "${2:-.}" ;;
+  --baseline) shift; exec "${SENTINEL[@]}" baseline "$@" ;;
 esac
 
 # ------------------------------------------------------------------ parse 'git clone' arguments

@@ -105,9 +105,16 @@ To keep this cheap, each directory has a state file with a stat signature of its
   directory does not ask again until something changes.
 
 Once you have reviewed a directory, `git-safe-clone --ack <dir>` accepts its current verdict.
+When you first install the sentinel, `git-safe-clone --baseline <dir>…` accepts the current state of
+projects you already own, so only changes from then on get flagged.
 Your own security tooling, which contains attack patterns on purpose, can be excluded with
-`--trust` (`install.sh` trusts this repository). The sentinel skips `$HOME`, `/` and trees with
-more than 60,000 files. It never runs the LLM, so for a full review run `git-check <dir>`.
+`--trust` (`install.sh` trusts this repository).
+
+The sentinel does not check everything:
+- **Skipped:** `$HOME` and `/`.
+- **Unchecked, with a warning once:** trees with more than 60,000 files, and first scans that do not
+  finish within the 25 s hook budget (`GIT_CHECK_SENTINEL_BUDGET`). Run `--rescan` in a terminal for those.
+- **No LLM:** it never runs the LLM. For a full review run `git-check <dir>`.
 
 ## Second opinion from a local LLM (optional)
 
