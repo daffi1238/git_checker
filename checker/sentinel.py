@@ -36,6 +36,7 @@ STATE_DIR = os.path.join(CACHE, "state")
 COMMIT_DIR = os.path.join(CACHE, "commits")
 RDIR = os.environ.get("GIT_CHECK_REPORTS", os.path.join(HOME, ".local/share/git-checker/reports"))
 TRUST_FILE = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, ".config")), "git-checker/trusted")
+BUDGET = int(os.environ.get("GIT_CHECK_SENTINEL_BUDGET", "25"))  # seconds for a scan inside the prompt hook
 MAX_FILES = int(os.environ.get("GIT_CHECK_SENTINEL_MAX_FILES", "60000"))
 # heavy, generated directories: not part of what the agent is told to follow
 SKIP = {".git", "node_modules", ".venv", "venv", "__pycache__", ".tox", ".mypy_cache", ".pytest_cache",
@@ -165,13 +166,49 @@ def _top(findings, n=8):
     return out[:n]
 
 
-def _scan(root: str, only: set[str]) -> tuple[str, list, str | None]:
+USER_OWNED = (".claude/settings.local.json", "CLAUDE.local.md")
+
+
+def _user_owned(root: str, paths: set[str]) -> set[str]:
+    """Files Claude Code/the user create locally (e.g. permissions accepted in a session). They only
+    come from the repository if git tracks them, so untracked ones are not the repository's content."""
+    cand = [p for p in paths if p.endswith(USER_OWNED)]
+    if not cand:
+        return set()
+    try:
+        out = subprocess.run(GIT_SAFE + ["-C", root, "ls-files", "-z", "--"] + cand, capture_output=True,
+                             timeout=20, env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"})
+        if out.returncode != 0:  # not a git repo: nothing tells us where they came from → keep checking them
+            return set()
+        tracked = set(out.stdout.decode(errors="replace").split("\0"))
+    except Exception:
+        return set()
+    return {p for p in cand if p not in tracked}
+
+
+class _Timeout(Exception):
+    pass
+
+
+def _scan(root: str, only: set[str], budget: int = 0) -> tuple[str, list, str | None]:
     """Deterministic phases (1 + 2) on a subset of files. → (verdict, findings, report path)."""
     from . import agent_surface, static_scan
     from .main import neutralize_targets, render_report
-    repo = Repo(root, only=only)
-    findings = static_scan.scan(repo)
-    f2, instr, execcfg = agent_surface.scan(repo)
+    only = only - _user_owned(root, only)
+    if budget:  # the prompt hook must answer quickly: give up on huge first scans
+        import signal
+
+        def _alarm(*_):
+            raise _Timeout()
+        signal.signal(signal.SIGALRM, _alarm)
+        signal.alarm(budget)
+    try:
+        repo = Repo(root, only=only)
+        findings = static_scan.scan(repo)
+        f2, instr, execcfg = agent_surface.scan(repo)
+    finally:
+        if budget:
+            signal.alarm(0)
     findings = sorted(findings + f2, key=lambda f: (-SEV_ORDER[f["severity"]], f["file"], f["line"] or 0))
     sevs = {f["severity"] for f in findings}
     verdict = "block" if "block" in sevs else "warn" if "warn" in sevs else "ok"
@@ -185,7 +222,7 @@ def _scan(root: str, only: set[str]) -> tuple[str, list, str | None]:
     return verdict, findings, report
 
 
-def assess(path: str, log=None) -> dict:
+def assess(path: str, log=None, budget: int = 0) -> dict:
     """→ {"status": ok|warn|block|trusted|skipped, "root", "acked", "findings", "report", "changed"}"""
     root = find_root(path)
     if os.environ.get("GIT_CHECK") == "0":
@@ -205,10 +242,18 @@ def assess(path: str, log=None) -> dict:
     changed = {p for p, v in sig.items() if not incremental or st["sig"].get(p) != v}
     if log:
         log(f"🔎 git_checker: {'re-checking ' + str(len(changed)) + ' changed file(s) in' if incremental else 'first check of'} {root}…")
-    if changed:
-        verdict, findings, report = _scan(root, changed)
-    else:  # only deletions
-        verdict, findings, report = "ok", [], None
+    try:
+        if changed:
+            verdict, findings, report = _scan(root, changed, budget)
+        else:  # only deletions
+            verdict, findings, report = "ok", [], None
+    except _Timeout:
+        # too big to check within the hook: remember the tree as "unchecked" (later changes are still
+        # re-scanned incrementally) and tell the user once how to run the full check
+        save_state({"root": root, "version": VERSION, "sig": sig, "verdict": "unchecked", "acked": None,
+                    "findings": [], "report": None, "notified": None, "source": "sentinel-timeout",
+                    "head": head_commit(root)})
+        return {"status": "unchecked", "root": root, "notified": None, "findings": []}
     prev = st or {}
     if incremental:
         new_verdict = _worse(prev.get("verdict", "ok"), verdict)
@@ -353,9 +398,18 @@ def cmd_hook() -> int:
     except ValueError:
         data = {}
     try:
-        r = assess(data.get("cwd") or os.getcwd())
+        r = assess(data.get("cwd") or os.getcwd(), budget=BUDGET)
     except Exception as e:  # never break every session because of a checker bug: fail open, but say so
         print(json.dumps({"systemMessage": f"git_checker sentinel error (directory NOT checked): {type(e).__name__}: {e}"[:400]}))
+        return 0
+    if r["status"] == "unchecked" and not r.get("notified"):
+        st = load_state(r["root"])
+        if st:
+            st["notified"] = True
+            save_state(st)
+        print(json.dumps({"systemMessage":
+            f"git_checker: {r['root']} is too big to check within the prompt hook ({BUDGET}s); it was NOT checked. "
+            f"Run the full check in a terminal:  git-safe-clone --rescan {r['root']}  (or --trust it)"}))
         return 0
     if not needs_attention(r):
         return 0
