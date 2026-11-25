@@ -2,7 +2,7 @@ rules:
   - id: py-exec-decoded
     languages: [python]
     severity: ERROR
-    message: exec/eval de contenido decodificado u ofuscado
+    message: exec/eval of decoded or obfuscated content
     pattern-either:
       - pattern: exec(<... base64.b64decode(...) ...>)
       - pattern: eval(<... base64.b64decode(...) ...>)
@@ -14,7 +14,7 @@ rules:
   - id: py-exec-remote
     languages: [python]
     severity: ERROR
-    message: exec/eval de contenido descargado de la red
+    message: exec/eval of content downloaded from the network
     pattern-either:
       - pattern: exec(<... requests.get(...) ...>)
       - pattern: exec(<... urllib.request.urlopen(...) ...>)
@@ -24,7 +24,7 @@ rules:
   - id: py-setup-network
     languages: [python]
     severity: WARNING
-    message: setup.py hace red o lanza procesos durante la instalación
+    message: setup.py uses the network or spawns processes during install
     paths:
       include: ["**/setup.py"]
     pattern-either:
@@ -37,7 +37,7 @@ rules:
   - id: js-eval-decoded
     languages: [javascript, typescript]
     severity: ERROR
-    message: eval/Function de contenido decodificado
+    message: eval/Function of decoded content
     pattern-either:
       - pattern: eval(<... atob(...) ...>)
       - pattern: eval(<... Buffer.from(...) ...>)
@@ -48,7 +48,7 @@ rules:
   - id: js-eval-remote
     languages: [javascript, typescript]
     severity: ERROR
-    message: eval/Function del cuerpo de una respuesta HTTP (descarga y ejecuta código)
+    message: eval/Function of an HTTP response body (downloads and runs code)
     pattern-either:
       - pattern: eval($R.data)
       - pattern: new Function(..., $R.data)
@@ -59,7 +59,7 @@ rules:
   - id: js-child-process-network
     languages: [javascript, typescript]
     severity: WARNING
-    message: child_process ejecuta un comando de red
+    message: child_process runs a network command
     patterns:
       - pattern-either:
           - pattern: require('child_process').$F($CMD, ...)

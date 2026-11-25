@@ -1,28 +1,34 @@
 #!/usr/bin/env bash
-# git-safe-clone — clona en cuarentena, analiza (código + superficie de agentes LLM)
-# y solo entrega el repo en su destino si es seguro.
+# git-safe-clone — clones into quarantine, analyses (code + LLM agent attack surface)
+# and only delivers the repo to its destination when it is safe.
 #
-#   git-safe-clone [opciones de git clone] <url> [dir]
-#   git-safe-clone --scan <dir>                 analiza un directorio ya existente
-#   git-safe-clone --release <cuarentena> [--neutralize]   entrega uno retenido
-#   git-safe-clone --list                       lista la cuarentena
+#   git-safe-clone [git clone options] <url> [dir]
+#   git-safe-clone --scan <dir>                 analyse an existing directory (full, with LLM)
+#   git-safe-clone --release <quarantine> [--neutralize]   deliver a held repo
+#   git-safe-clone --list                       list the quarantine
+#   git-safe-clone --precheck <dir>             sentinel check before opening Claude Code there
+#   git-safe-clone --ack <dir>                  accept the current WARN/BLOCK of <dir> after review
+#   git-safe-clone --trust|--untrust <dir>      never/again check <dir> with the sentinel
+#   git-safe-clone --status <dir> | --rescan <dir>
 #
-# Variables: GIT_CHECK_NO_LLM=1 (sin fase 3), GIT_CHECK_NO_EXTERNAL=1 (sin semgrep/guarddog/osv),
-#            GIT_CHECK_MODEL (opus), GIT_CHECK_QUARANTINE, GIT_CHECK_REPORTS,
-#            GIT_CHECK_NONINTERACTIVE=1 (nunca pregunta; WARN y BLOCK se quedan en cuarentena)
+# Env: GIT_CHECK_NO_LLM=1 (no phase 3), GIT_CHECK_NO_EXTERNAL=1 (no semgrep/guarddog/osv),
+#      GIT_CHECK_MODEL (opus), GIT_CHECK_NO_CACHE=1 (ignore the per-commit verdict cache),
+#      GIT_CHECK_QUARANTINE, GIT_CHECK_REPORTS,
+#      GIT_CHECK_NONINTERACTIVE=1 (never ask; WARN and BLOCK stay in quarantine)
 set -uo pipefail
 
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 ROOT=$(dirname "$(dirname "$SELF")")
 QDIR=${GIT_CHECK_QUARANTINE:-$HOME/.cache/git-checker/quarantine}
 RDIR=${GIT_CHECK_REPORTS:-$HOME/.local/share/git-checker/reports}
-# git real (no el shim de ~/.local/bin/git, para no entrar en bucle)
+# the real git (not the ~/.local/bin/git shim, to avoid a loop)
 GIT=${GIT_CHECK_REAL_GIT:-}
 if [[ -z $GIT ]]; then
   for c in $(type -ap git); do [[ $(readlink -f "$c") != "$ROOT/bin/git-shim" ]] && { GIT=$c; break; }; done
 fi
 [[ -x $GIT ]] || GIT=/usr/bin/git
 PY=(python3 -I "$ROOT/gitcheck.py")
+SENTINEL=(python3 -I "$ROOT/gitcheck.py" sentinel)
 
 red() { printf '\033[1;31m%s\033[0m\n' "$*" >&2; }
 yel() { printf '\033[1;33m%s\033[0m\n' "$*" >&2; }
@@ -33,15 +39,15 @@ interactive() {
   [[ -z ${GIT_CHECK_NONINTERACTIVE:-} ]] && [[ -t 2 ]] && { : </dev/tty; } 2>/dev/null
 }
 
-ask() {  # ask "pregunta" -> respuesta en $REPLY
+ask() {  # ask "question" -> answer in $REPLY
   printf '%s' "$1" >/dev/tty
   IFS= read -r REPLY </dev/tty || REPLY=""
 }
 
-restore_symlinks() {  # el clon se hizo con core.symlinks=false
+restore_symlinks() {  # the clone was made with core.symlinks=false
   local dest=$1 json=$2
   if jq -e '[.findings[] | select(.rule=="symlink-escape")] | length > 0' "$json" >/dev/null 2>&1; then
-    yel "  Symlinks que escapan del repo: se dejan como ficheros de texto."
+    yel "  Symlinks pointing outside the repo: left as plain text files."
     return
   fi
   local links=()
@@ -56,23 +62,26 @@ neutralize() {
   while IFS= read -r p; do
     [[ -z $p || $p == *..* ]] && continue
     if [[ -e $dest/$p || -L $dest/$p ]]; then
-      mv -- "$dest/$p" "$dest/$p.quarantined" && yel "  neutralizado: $p → $p.quarantined"
+      mv -- "$dest/$p" "$dest/$p.quarantined" && yel "  neutralized: $p → $p.quarantined"
     fi
   done < <(jq -r '.neutralize[]?' "$json")
 }
 
-deliver() {  # deliver <qroot> [neutralize]
-  local qroot=$1 neu=${2:-} dest
-  dest=$(cat "$qroot/dest") || die "cuarentena sin destino: $qroot"
-  [[ -e $dest ]] && [[ -n $(ls -A "$dest" 2>/dev/null) ]] && die "el destino ya existe: $dest"
+deliver() {  # deliver <qroot> [neutralize] [acked-level]
+  local qroot=$1 neu=${2:-} acked=${3:--} dest report=""
+  dest=$(cat "$qroot/dest") || die "quarantine without destination: $qroot"
+  [[ -e $dest ]] && [[ -n $(ls -A "$dest" 2>/dev/null) ]] && die "destination already exists: $dest"
   [[ -d $dest ]] && rmdir "$dest"
   mkdir -p "$(dirname "$dest")"
-  mv -- "$qroot/repo" "$dest" || die "no se pudo mover a $dest"
+  mv -- "$qroot/repo" "$dest" || die "could not move to $dest"
   restore_symlinks "$dest" "$qroot/result.json"
   [[ -n $neu ]] && neutralize "$dest" "$qroot/result.json"
   cp "$qroot/result.json" "$RDIR/$(basename "$qroot").json" 2>/dev/null
+  [[ -f $qroot/report ]] && report=$(cat "$qroot/report")
+  # remember the verdict for this directory: opening Claude Code there will not re-ask unless files change
+  "${SENTINEL[@]}" record "$dest" "$qroot/result.json" "$acked" "$report" 2>/dev/null
   rm -rf -- "$qroot"
-  grn "✅ Entregado en $dest"
+  grn "✅ Delivered to $dest"
 }
 
 analyze() {  # analyze <dir> <name> <json> <report>
@@ -83,35 +92,42 @@ analyze() {  # analyze <dir> <name> <json> <report>
   "${PY[@]}" "$1" --name "$2" --json "$3" --report "$4" "${flags[@]}"
 }
 
-# ------------------------------------------------------------------ subcomandos
+# ------------------------------------------------------------------ subcommands
 case ${1:-} in
-  ""|-h|--help) sed -n '2,15p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  ""|-h|--help) sed -n '2,18p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
   --list) ls -1t "$QDIR" 2>/dev/null; exit 0 ;;
   --scan)
-    [[ -d ${2:-} ]] || die "uso: --scan <dir>"
+    [[ -d ${2:-} ]] || die "usage: --scan <dir>"
     d=$(readlink -f "$2"); ts=$(date +%Y%m%d-%H%M%S)
     tmp=$(mktemp -d); rep="$RDIR/$(basename "$d")-$ts.md"
     analyze "$d" "$(basename "$d")" "$tmp/result.json" "$rep"; rc=$?
-    echo "  Informe: $rep" >&2; rm -rf "$tmp"; exit $rc ;;
+    echo "  Report: $rep" >&2; rm -rf "$tmp"; exit $rc ;;
   --release)
-    q=$(readlink -f "${2:-}"); [[ -d $q/repo && $q == "$(readlink -f "$QDIR")"/* ]] || die "uso: --release <dir de cuarentena>"
-    deliver "$q" "$([[ ${3:-} == --neutralize ]] && echo 1)"; exit 0 ;;
+    q=$(readlink -f "${2:-}"); [[ -d $q/repo && $q == "$(readlink -f "$QDIR")"/* ]] || die "usage: --release <quarantine dir>"
+    # releasing by hand counts as accepting the verdict
+    deliver "$q" "$([[ ${3:-} == --neutralize ]] && echo 1)" "$(jq -r .verdict "$q/result.json" 2>/dev/null || echo -)"; exit 0 ;;
+  --precheck) exec "${SENTINEL[@]}" precheck "${2:-.}" ;;
+  --ack) exec "${SENTINEL[@]}" ack "${2:-.}" ;;
+  --trust) exec "${SENTINEL[@]}" trust "${2:-.}" ;;
+  --untrust) exec "${SENTINEL[@]}" untrust "${2:-.}" ;;
+  --status) exec "${SENTINEL[@]}" status "${2:-.}" ;;
+  --rescan) exec "${SENTINEL[@]}" rescan "${2:-.}" ;;
 esac
 
-# ------------------------------------------------------------------ parseo de 'git clone'
+# ------------------------------------------------------------------ parse 'git clone' arguments
 opts=(); pos=(); bare=""
 while (($#)); do
   case $1 in
     --) shift; pos+=("$@"); break ;;
     --recurse-submodules|--recurse-submodules=*|--recursive|--shallow-submodules)
-      yel "⚠  $1 ignorado: los submódulos no se clonan hasta revisar el repo"; shift ;;
+      yel "⚠  $1 ignored: submodules are not cloned until the repo has been reviewed"; shift ;;
     -u|--upload-pack|--upload-pack=*|-u?*|--template|--template=*|--separate-git-dir|--separate-git-dir=*)
-      die "opción $1 no permitida (ejecuta comandos o plantillas)" ;;
+      die "option $1 not allowed (runs commands or templates)" ;;
     -c|--config)
-      [[ ${2:-} =~ ^(core\.|protocol\.|submodule\.|filter\.|uploadpack\.|credential\.|include) ]] && die "config peligrosa: $2"
+      [[ ${2:-} =~ ^(core\.|protocol\.|submodule\.|filter\.|uploadpack\.|credential\.|include) ]] && die "dangerous config: $2"
       opts+=("$1" "$2"); shift 2 ;;
     --config=*|-c?*)
-      [[ ${1#*=} =~ ^(core\.|protocol\.|submodule\.|filter\.|uploadpack\.|credential\.|include) || ${1#-c} =~ ^(core\.|protocol\.) ]] && die "config peligrosa: $1"
+      [[ ${1#*=} =~ ^(core\.|protocol\.|submodule\.|filter\.|uploadpack\.|credential\.|include) || ${1#-c} =~ ^(core\.|protocol\.) ]] && die "dangerous config: $1"
       opts+=("$1"); shift ;;
     --bare|--mirror) bare=1; opts+=("$1"); shift ;;
     -b|--branch|-o|--origin|--depth|--shallow-since|--shallow-exclude|--reference|--reference-if-able|\
@@ -121,7 +137,7 @@ while (($#)); do
     *) pos+=("$1"); shift ;;
   esac
 done
-((${#pos[@]} >= 1 && ${#pos[@]} <= 2)) || die "uso: git clone [opciones] <url> [directorio]"
+((${#pos[@]} >= 1 && ${#pos[@]} <= 2)) || die "usage: git clone [options] <url> [directory]"
 url=${pos[0]}
 if ((${#pos[@]} == 2)); then
   dest=${pos[1]}
@@ -130,17 +146,17 @@ else
   dest=$n${bare:+.git}
 fi
 name=$(basename -- "$dest")
-[[ -n $name && $name != . && $name != .. ]] || die "no puedo deducir el directorio destino de: $url"
+[[ -n $name && $name != . && $name != .. ]] || die "cannot work out the destination directory from: $url"
 dest=$(readlink -m -- "$dest")
-[[ -e $dest && -n $(ls -A "$dest" 2>/dev/null) ]] && die "fatal: el destino '$dest' ya existe y no está vacío"
+[[ -e $dest && -n $(ls -A "$dest" 2>/dev/null) ]] && die "fatal: destination path '$dest' already exists and is not empty"
 
 ts=$(date +%Y%m%d-%H%M%S)
 qroot="$QDIR/$name-$ts-$$"
-mkdir -p "$qroot" "$RDIR" || die "no puedo crear $qroot"
+mkdir -p "$qroot" "$RDIR" || die "cannot create $qroot"
 chmod 700 "$QDIR" 2>/dev/null
 printf '%s' "$dest" >"$qroot/dest"
 
-yel "🔒 Clonando en cuarentena: $qroot/repo"
+yel "🔒 Cloning into quarantine: $qroot/repo"
 GIT_LFS_SKIP_SMUDGE=1 GIT_CONFIG_PARAMETERS= "$GIT" \
   -c core.hooksPath=/dev/null \
   -c core.symlinks=false \
@@ -154,34 +170,52 @@ GIT_LFS_SKIP_SMUDGE=1 GIT_CONFIG_PARAMETERS= "$GIT" \
   clone --no-recurse-submodules "${opts[@]}" -- "$url" "$qroot/repo" || { rm -rf -- "$qroot"; exit 128; }
 
 report="$RDIR/$name-$ts.md"
-analyze "$qroot/repo" "$name" "$qroot/result.json" "$report"; rc=$?
-echo "  Informe: $report" >&2
+sha=""; [[ -z $bare ]] && sha=$("$GIT" -C "$qroot/repo" -c core.fsmonitor=false rev-parse --verify -q HEAD 2>/dev/null)
+need_llm=1; [[ -n ${GIT_CHECK_NO_LLM:-} ]] && need_llm=0
+cached=""
+if [[ -n $sha && -z ${GIT_CHECK_NO_CACHE:-} ]] && hit=$("${SENTINEL[@]}" cache-get "$sha" "$qroot/result.json" "$need_llm" 2>/dev/null); then
+  # same commit, same checker version: reuse the verdict (no new Opus cost)
+  creport=$(sed -n 1p <<<"$hit"); cat_at=$(sed -n 2p <<<"$hit")
+  [[ -n $creport ]] && cp "$creport" "$report"
+  cached=1
+  v=$(jq -r .verdict "$qroot/result.json")
+  yel "  ♻  Cached verdict for commit ${sha:0:12} (analysed $cat_at): $v   (GIT_CHECK_NO_CACHE=1 to re-analyse)"
+  case $v in ok) rc=0 ;; warn) rc=10 ;; block) rc=20 ;; *) rc=2 ;; esac
+else
+  analyze "$qroot/repo" "$name" "$qroot/result.json" "$report"; rc=$?
+  if [[ -n $sha && ( $rc == 0 || $rc == 10 || $rc == 20 ) ]]; then
+    llm_ok=0; [[ $need_llm == 1 ]] && jq -e '.llm != null and (.llm | has("error") | not)' "$qroot/result.json" >/dev/null 2>&1 && llm_ok=1
+    "${SENTINEL[@]}" cache-put "$sha" "$qroot/result.json" "$report" "$llm_ok" 2>/dev/null
+  fi
+fi
+printf '%s' "$report" >"$qroot/report"
+echo "  Report: $report" >&2
 
 case $rc in
-  0) deliver "$qroot" ;;
+  0) deliver "$qroot" "" ok ;;
   10)
     if interactive; then
       while :; do
-        ask $'\n¿Qué hago? [a]ceptar  [n]eutralizar config de agentes y aceptar  [r]echazar  [v]er informe: '
+        ask $'\nWhat now? [a]ccept  [n]eutralize agent config and accept  [r]eject  [v]iew report: '
         case $REPLY in
-          a|A) deliver "$qroot"; break ;;
-          n|N) deliver "$qroot" 1; break ;;
+          a|A) deliver "$qroot" "" warn; break ;;
+          n|N) deliver "$qroot" 1 warn; break ;;
           v|V) ${PAGER:-less -R} "$report" </dev/tty >/dev/tty ;;
-          *) yel "Retenido en cuarentena: $qroot  (git-safe-clone --release $qroot [--neutralize])"; exit 10 ;;
+          *) yel "Held in quarantine: $qroot  (git-safe-clone --release $qroot [--neutralize])"; exit 10 ;;
         esac
       done
     else
-      yel "WARN: retenido en cuarentena: $qroot"
-      yel "  Revisa $report y entrega con: git-safe-clone --release $qroot [--neutralize]"
+      yel "WARN: held in quarantine: $qroot"
+      yel "  Review $report and deliver with: git-safe-clone --release $qroot [--neutralize]"
       exit 10
     fi ;;
   20)
-    red "⛔ BLOCK: el repositorio NO se ha entregado. Retenido en: $qroot"
-    red "   Informe: $report"
+    red "⛔ BLOCK: the repository has NOT been delivered. Held in: $qroot"
+    red "   Report: $report"
     if interactive; then
-      ask $'Para entregarlo igualmente (NEUTRALIZADO) escribe ACEPTO; cualquier otra cosa lo deja retenido: '
-      [[ $REPLY == ACEPTO ]] && { deliver "$qroot" 1; exit 0; }
+      ask $'To deliver it anyway (NEUTRALIZED) type ACCEPT; anything else keeps it held: '
+      [[ $REPLY == ACCEPT ]] && { deliver "$qroot" 1 block; exit 0; }
     fi
     exit 20 ;;
-  *) red "Error del analizador (rc=$rc). Retenido en: $qroot"; exit "$rc" ;;
+  *) red "Analyser error (rc=$rc). Held in: $qroot"; exit "$rc" ;;
 esac

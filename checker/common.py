@@ -1,7 +1,7 @@
-"""Utilidades compartidas: modelo de hallazgos, recorrido del repo y saneado de texto.
+"""Shared helpers: finding model, repo walking and text sanitising.
 
-Todo el contenido del repositorio analizado es NO FIABLE. Nada de aquí lo ejecuta:
-solo se lee como bytes/texto.
+Everything inside the analysed repository is UNTRUSTED. Nothing here executes it:
+it is only read as bytes/text.
 """
 from __future__ import annotations
 
@@ -13,15 +13,18 @@ import subprocess
 SEV_ORDER = {"info": 0, "warn": 1, "block": 2}
 MAX_TEXT_BYTES = 2_000_000
 SKIP_DIRS = {".git"}
+# git run against an untrusted working tree: no hooks, no fsmonitor (a .git/config inside a ZIP could
+# define one and get it executed), no optional locks
+GIT_SAFE = ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false"]
 
 # --------------------------------------------------------------------------- Unicode
 
 TAG_RE = re.compile("[\U000E0000-\U000E007F]+")          # "ASCII smuggling" invisible
 ZW_RE = re.compile("[​-‍⁠-⁤᠎­]")
 BIDI_RE = re.compile("[‪-‮⁦-⁩‎‏؜]")
-# Rachas de selectores de variación: no se ven y sirven para esconder payloads (técnica GlassWorm)
+# Runs of variation selectors: invisible, used to hide payloads (GlassWorm technique)
 VS_RUN_RE = re.compile("[\uFE00-\uFE0F\U000E0100-\U000E01EF]{4,}")
-# Controles C0/C1 (salvo \t \n \r): evitan inyección de secuencias ANSI en la terminal
+# C0/C1 controls (except \t \n \r): prevents ANSI escape injection into the terminal
 CTRL_RE = re.compile("[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]")
 
 
@@ -30,16 +33,16 @@ def decode_tags(run: str) -> str:
 
 
 def reveal(text: str) -> str:
-    """Hace visible todo lo invisible/peligroso para mostrarlo a humanos o al LLM."""
-    text = TAG_RE.sub(lambda m: f'⟦OCULTO-TAGS:"{decode_tags(m.group())}"⟧', text)
-    text = VS_RUN_RE.sub(lambda m: f"⟦OCULTO-VS x{len(m.group())}⟧", text)
+    """Make everything invisible/dangerous visible before showing it to humans or to the LLM."""
+    text = TAG_RE.sub(lambda m: f'⟦HIDDEN-TAGS:"{decode_tags(m.group())}"⟧', text)
+    text = VS_RUN_RE.sub(lambda m: f"⟦HIDDEN-VS x{len(m.group())}⟧", text)
     text = ZW_RE.sub(lambda m: f"⟦ZW U+{ord(m.group()):04X}⟧", text)
     text = BIDI_RE.sub(lambda m: f"⟦BIDI U+{ord(m.group()):04X}⟧", text)
     text = CTRL_RE.sub(lambda m: f"⟦CTRL 0x{ord(m.group()):02X}⟧", text)
     return text
 
 
-# --------------------------------------------------------------------------- Hallazgos
+# --------------------------------------------------------------------------- Findings
 
 def finding(sev, phase, rule, path, msg, line=None, snippet=None):
     return {
@@ -76,12 +79,15 @@ def snippet_at(text: str, idx: int, width: int = 200) -> str:
 # --------------------------------------------------------------------------- Repo
 
 class Repo:
-    def __init__(self, root: str):
+    def __init__(self, root: str, only: set[str] | None = None):
+        """only: restrict the analysis to these relative paths (incremental re-scan)."""
         self.root = os.path.realpath(root)
-        self.files: list[str] = []          # rutas relativas
+        self.files: list[str] = []          # relative paths
         self._text: dict[str, str | None] = {}
-        self.symlinks: dict[str, str] = {}  # ruta -> destino (según el índice de git)
+        self.symlinks: dict[str, str] = {}  # path -> target (from the git index)
         self._walk()
+        if only is not None:
+            self.files = [f for f in self.files if f in only]
         self._load_git_symlinks()
 
     def _walk(self):
@@ -90,20 +96,20 @@ class Repo:
             for fn in filenames:
                 ap = os.path.join(dirpath, fn)
                 self.files.append(os.path.relpath(ap, self.root))
-            for d in dirnames:  # symlinks a directorios aparecen como dirs
+            for d in dirnames:  # symlinks to directories show up as dirs
                 ap = os.path.join(dirpath, d)
                 if os.path.islink(ap):
                     self.files.append(os.path.relpath(ap, self.root))
         self.files.sort()
 
     def _load_git_symlinks(self):
-        """Con core.symlinks=false los symlinks se escriben como ficheros de texto;
-        el índice de git conserva el modo 120000 y el destino real."""
+        """With core.symlinks=false symlinks are written as plain text files;
+        the git index keeps mode 120000 and the real target."""
         if not os.path.isdir(os.path.join(self.root, ".git")):
             return
         try:
             out = subprocess.run(
-                ["git", "-c", "core.hooksPath=/dev/null", "-C", self.root, "ls-files", "-s", "-z"],
+                GIT_SAFE + ["-C", self.root, "ls-files", "-s", "-z"],
                 capture_output=True, timeout=60, check=False).stdout
         except Exception:
             return
@@ -113,7 +119,7 @@ class Repo:
             meta, _, path = entry.partition(b"\t")
             sha = meta.split()[1].decode()
             target = subprocess.run(
-                ["git", "-C", self.root, "cat-file", "blob", sha],
+                GIT_SAFE + ["-C", self.root, "cat-file", "blob", sha],
                 capture_output=True, timeout=30, check=False).stdout
             self.symlinks[path.decode("utf-8", "replace")] = target.decode("utf-8", "replace")
 
@@ -124,7 +130,7 @@ class Repo:
         return os.path.lexists(self.abspath(rel))
 
     def text(self, rel: str) -> str | None:
-        """Devuelve el contenido como texto o None si es binario/enorme/symlink."""
+        """Return the content as text, or None if binary/huge/symlink."""
         if rel in self._text:
             return self._text[rel]
         ap = self.abspath(rel)
@@ -155,7 +161,7 @@ class Repo:
 
 
 def load_json_loose(text: str):
-    """JSON tolerante a comentarios // y /* */ y comas finales (jsonc)."""
+    """JSON that tolerates // and /* */ comments and trailing commas (jsonc)."""
     try:
         return json.loads(text)
     except Exception:

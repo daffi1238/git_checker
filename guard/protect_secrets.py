@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""Hook PreToolUse de Claude Code: impide que el agente LEA, COPIE o MODIFIQUE claves
-privadas y almacenes de credenciales, pero deja USARLAS (ssh, scp -i, git, ssh-add…).
+"""Claude Code PreToolUse hook: stops the agent from READING, COPYING or MODIFYING private
+keys and credential stores, while still letting it USE them (ssh, scp -i, git, ssh-add…).
 
-- Read/Grep/Edit/Write/NotebookEdit sobre un directorio protegido → deny
-  (salvo ~/.ssh/config, known_hosts* y *.pub, que solo se pueden leer).
-- Bash: cada segmento del comando (separado por | ; && || & $( ` ) que mencione una
-  ruta protegida o el nombre de una clave privada tiene que empezar por un programa
-  que USA claves sin volcarlas (ssh, scp, git, ssh-add…). Además se eliminan los
-  argumentos -i <clave> / IdentityFile=…; si sigue apareciendo la clave como origen
-  de scp/rsync/redirección < → deny.
+- Read/Grep/Edit/Write/NotebookEdit on a protected directory → deny
+  (except ~/.ssh/config, known_hosts* and *.pub, which may only be read).
+- Bash: every command segment (split on | ; && || & $( ` ) that mentions a protected
+  path or the name of a private key must start with a program that USES keys without
+  dumping them (ssh, scp, git, ssh-add…). The -i <key> / IdentityFile=… arguments are
+  stripped first; if the key still shows up as an scp/rsync source or a < redirection → deny.
 
-Es una defensa más, no una garantía: un comando suficientemente ofuscado puede
-esquivarla. Lo que de verdad protege una clave robada es la passphrase.
+This is one more layer of defense, not a guarantee: a sufficiently obfuscated command can
+get around it. What really protects a stolen key is a passphrase.
 """
 import json
 import os
@@ -60,7 +59,7 @@ def deny(reason, detail=""):
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",
-        "permissionDecisionReason": f"protect_secrets: {reason}. Si necesitas esto de verdad, pide al usuario que lo haga él."}}))
+        "permissionDecisionReason": f"protect_secrets: {reason}. If you really need this, ask the user to do it themselves."}}))
     sys.exit(0)
 
 
@@ -87,8 +86,8 @@ def check_file_tool(tool, inp, cwd):
     if not where:
         return
     if tool == "Read" and where == SSH_DIR and SSH_READABLE.match(os.path.basename(real)):
-        return  # config / known_hosts / .pub: no son secretos
-    deny(f"{tool} sobre {path} (zona protegida {where})", path)
+        return  # config / known_hosts / .pub: not secrets
+    deny(f"{tool} on {path} (protected area {where})", path)
 
 
 SPLIT_RE = re.compile(r"\|\||&&|[|;&\n]|\$\(|`|<\(|>\(")
@@ -118,15 +117,15 @@ def check_bash(cmd):
     prot_re = re.compile(DIR_WORDS + "|" + FILE_WORDS)
 
     def mentions(s, strip=False):
-        if strip:  # solo para ssh/scp/git…: '-i clave' es USARLA, no leerla
+        if strip:  # only for ssh/scp/git…: '-i key' means USING it, not reading it
             s = strip_identity_args(s)
-        s = PUBLIC_RE.sub(" ", s)  # config, known_hosts y *.pub no son secretos
+        s = PUBLIC_RE.sub(" ", s)  # config, known_hosts and *.pub are not secrets
         return bool(prot_re.search(s) or (key_re and key_re.search(s)))
 
     if not mentions(cmd):
         return
     segments = [s for s in SPLIT_RE.split(cmd) if s.strip()]
-    # 'cd ~/.ssh && cat github_devia' → todo el comando cuenta como dentro de la zona
+    # 'cd ~/.ssh && cat <key>' → the whole command counts as inside the area
     entered = any(first_prog(s) in ("cd", "pushd") and mentions(s) for s in segments)
     for seg in segments:
         prog = first_prog(seg)
@@ -135,16 +134,16 @@ def check_bash(cmd):
         if not (mentions(seg, strip=prog in ALLOW_PROGS) or entered):
             continue
         if prog not in ALLOW_PROGS:
-            deny(f"'{prog}' tocaría credenciales protegidas", cmd)
+            deny(f"'{prog}' would touch protected credentials", cmd)
         rest = strip_identity_args(seg)
         if re.search(r"<\s*\S*(" + DIR_WORDS + ")", rest) or (key_re and re.search(r"<\s*\S*" + key_re.pattern, rest)):
-            deny("redirección de una clave como entrada", cmd)
+            deny("a key redirected as input", cmd)
         if re.search(r">>?\s*\S*(" + DIR_WORDS + ")", rest):
-            deny("escritura en zona protegida (p.ej. authorized_keys)", cmd)
+            deny("write into a protected area (e.g. authorized_keys)", cmd)
         if prog in COPY_PROGS and mentions(rest):
-            deny(f"{prog} con una clave/credencial como fichero a copiar", cmd)
+            deny(f"{prog} with a key/credential as the file to copy", cmd)
         if prog == "git" and re.search(r"\b(add|commit|archive|bundle|send-email|hash-object|show|cat-file)\b", seg) and mentions(rest):
-            deny("git manipularía una clave como fichero", cmd)
+            deny("git would handle a key as a file", cmd)
 
 
 def main():
@@ -162,10 +161,10 @@ def main():
             check_bash(str(inp.get("command", "")))
     except SystemExit:
         raise
-    except Exception as e:  # fallo cerrado si el comando huele a credenciales
+    except Exception as e:  # fail closed if the command smells of credentials
         blob = json.dumps(inp)
         if re.search(DIR_WORDS, blob):
-            deny(f"error interno del guard ({e}); bloqueo preventivo", blob)
+            deny(f"internal guard error ({e}); blocking as a precaution", blob)
 
 
 if __name__ == "__main__":

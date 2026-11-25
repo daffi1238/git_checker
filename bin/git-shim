@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Shim de git (git_checker). Instalado como ~/.local/bin/git, delante de /usr/bin en el PATH.
-# Intercepta `git clone` cuando lo usa una persona (hay TTY) o Claude Code (CLAUDECODE=1)
-# y lo manda a git-safe-clone. Todo lo demás va directo al git real.
-#   GIT_CHECK=0        → nunca interceptar
-#   GIT_CHECK_FORCE=1  → interceptar también sin TTY (scripts)
+# git shim (git_checker). Installed as ~/.local/bin/git, ahead of /usr/bin in PATH.
+# Intercepts `git clone` when a person runs it (there is a TTY) or Claude Code does (CLAUDECODE=1)
+# and hands it to git-safe-clone. Everything else goes straight to the real git.
+#   GIT_CHECK=0        → never intercept
+#   GIT_CHECK_FORCE=1  → intercept without a TTY too (scripts)
 SELF=$(readlink -f "$0")
 
 real=""
@@ -21,7 +21,7 @@ intercept() {
 }
 
 if intercept; then
-  # saltar opciones globales para encontrar el subcomando
+  # skip global options to find the subcommand
   args=("$@"); i=0; cdir=""; globals=()
   while ((i < ${#args[@]})); do
     a=${args[i]}
@@ -34,7 +34,7 @@ if intercept; then
   done
   if [[ ${args[i]:-} == clone ]]; then
     if ((${#globals[@]})); then
-      echo "git_checker: 'git ${globals[*]} clone' no soportado; usa 'git clone …' (o GIT_CHECK=0 para saltarte la revisión)" >&2
+      echo "git_checker: 'git ${globals[*]} clone' is not supported; use 'git clone …' (or GIT_CHECK=0 to skip the review)" >&2
       exit 2
     fi
     [[ -n $cdir ]] && { cd -- "$cdir" || exit 128; }

@@ -1,7 +1,7 @@
-"""Analiza un repositorio ya clonado (en cuarentena) y emite un veredicto.
+"""Analyse an already cloned (quarantined) repository and emit a verdict.
 
-Uso:  python3 -I -m checker.main <repo> [--json out.json] [--report out.md] [--no-llm] [--no-external]
-Salida: 0 = OK, 10 = WARN, 20 = BLOCK, 2 = error
+Usage:  python3 -I gitcheck.py <repo> [--json out.json] [--report out.md] [--no-llm] [--no-external]
+Exit:   0 = OK, 10 = WARN, 20 = BLOCK, 2 = error
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ EXIT = {"ok": 0, "warn": 10, "block": 20}
 C = {"ok": "\033[1;32m", "warn": "\033[1;33m", "block": "\033[1;31m", "info": "\033[2m", "x": "\033[0m"}
 LABEL = {"ok": "OK", "warn": "WARN", "block": "BLOCK"}
 
-# Rutas que se renombran a *.quarantined si el usuario elige "neutralizar"
+# Paths renamed to *.quarantined when the user chooses "neutralize"
 NEUTRALIZABLE = (".claude", ".mcp.json", "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", "GEMINI.md", ".cursorrules",
                  ".cursor", ".windsurfrules", ".clinerules", ".github/copilot-instructions.md", ".vscode/tasks.json",
                  ".vscode/settings.json", ".vscode/mcp.json", ".devcontainer", ".envrc", ".gemini", ".codex")
@@ -48,16 +48,16 @@ def neutralize_targets(repo, findings):
 def render_llm(title, llm):
     L = [f"## {title}", ""]
     if "error" in llm:
-        return L + [f"⚠️ No disponible: {reveal(llm['error'])}", ""]
-    L += [f"**Veredicto LLM:** {llm['verdict']}"
-          + (" — ⚠️ **INTENTO DE INYECCIÓN CONTRA EL REVISOR**" if llm.get("injection_attempt_against_reviewer") else ""),
+        return L + [f"⚠️ Not available: {reveal(llm['error'])}", ""]
+    L += [f"**LLM verdict:** {llm['verdict']}"
+          + (" — ⚠️ **INJECTION ATTEMPT AGAINST THE REVIEWER**" if llm.get("injection_attempt_against_reviewer") else ""),
           "", reveal(llm.get("summary", "")), ""]
     for f in llm.get("findings", []):
         L.append(f"- **[{f['severity']}] {f['category']}** `{reveal(f['file'])}`: {reveal(f['explanation'])}"
                  + (f"\n  > {reveal(f.get('evidence', ''))[:300]}" if f.get("evidence") else ""))
     meta = []
     if llm.get("cost_usd") is not None:
-        meta.append(f"coste: ${llm['cost_usd']:.4f}")
+        meta.append(f"cost: ${llm['cost_usd']:.4f}")
     if llm.get("seconds") is not None:
         meta.append(f"{llm['seconds']} s")
     if llm.get("tokens"):
@@ -72,19 +72,19 @@ def render_llm(title, llm):
 
 
 def render_report(name, verdict, findings, reviews, instr, execcfg, targets):
-    L = [f"# Informe git-check: {name}", "",
-         f"- **Veredicto:** {LABEL[verdict]}",
-         f"- **Fecha:** {dt.datetime.now().isoformat(timespec='seconds')}",
-         f"- **Hallazgos:** " + ", ".join(f"{k}={sum(f['severity'] == k for f in findings)}" for k in ("block", "warn", "info")),
+    L = [f"# git-check report: {name}", "",
+         f"- **Verdict:** {LABEL[verdict]}",
+         f"- **Date:** {dt.datetime.now().isoformat(timespec='seconds')}",
+         f"- **Findings:** " + ", ".join(f"{k}={sum(f['severity'] == k for f in findings)}" for k in ("block", "warn", "info")),
          ""]
     for title, llm in reviews:
         L += render_llm(title, llm)
-    L += ["## Superficie de agentes", "",
-          "**Instrucciones:** " + (", ".join(f"`{x}`" for x in instr) or "ninguna"),
-          "", "**Config ejecutable:** " + (", ".join(f"`{x}`" for x in execcfg) or "ninguna"), ""]
+    L += ["## Agent surface", "",
+          "**Instruction files:** " + (", ".join(f"`{x}`" for x in instr) or "none"),
+          "", "**Executable config:** " + (", ".join(f"`{x}`" for x in execcfg) or "none"), ""]
     if targets:
-        L += ["**Neutralizables:** " + ", ".join(f"`{t}`" for t in targets), ""]
-    L += ["## Hallazgos deterministas", ""]
+        L += ["**Neutralizable:** " + ", ".join(f"`{t}`" for t in targets), ""]
+    L += ["## Deterministic findings", ""]
     for sev in ("block", "warn", "info"):
         group = [f for f in findings if f["severity"] == sev]
         if not group:
@@ -113,11 +113,11 @@ def main(argv=None):
     name = a.name or os.path.basename(repo.root)
     log(f"🔎 git-check: {len(repo.files)} ficheros en {name}")
 
-    log("  [1/3] código malicioso / ejecución…")
+    log("  [1/3] malicious code / execution…")
     findings = static_scan.scan(repo)
     if not a.no_external:
         findings += external.scan(repo)
-    log("  [2/3] superficie de agentes LLM…")
+    log("  [2/3] LLM agent attack surface…")
     f2, instr, execcfg = agent_surface.scan(repo)
     findings += f2
 
@@ -133,42 +133,42 @@ def main(argv=None):
     sevs = {f["severity"] for f in findings}
     verdict = "block" if "block" in sevs else "warn" if "warn" in sevs else "ok"
 
-    # ---- fase 3: Opus (claude -p) y/o LLM local, en paralelo. Cada uno solo puede ENDURECER.
-    reviews = []  # [(título, resultado)]
+    # ---- phase 3: Opus (claude -p) and/or local LLM, in parallel. Each one can only make things STRICTER.
+    reviews = []  # [(title, result)]
     llm = llm_local = None
     if not a.no_llm:
         use_opus = not os.environ.get("GIT_CHECK_NO_OPUS")
         lcfg = local_llm.config()
         who = ([llm_review.MODEL] if use_opus else []) + ([f"local {lcfg['model']}"] if lcfg else [])
-        log(f"  [3/3] revisión con {' + '.join(who) or 'ningún LLM'} (sin herramientas)…")
+        log(f"  [3/3] review with {' + '.join(who) or 'no LLM'} (no tools)…")
         with ThreadPoolExecutor(2) as ex:
             fo = ex.submit(llm_review.review, repo, findings, instr, execcfg) if use_opus else None
             fl = ex.submit(local_llm.review, repo, findings, instr, execcfg, lcfg) if lcfg else None
             def res(fut):
                 try:
                     return fut.result()
-                except Exception as e:  # nunca tumbar el análisis por el revisor
+                except Exception as e:  # a reviewer must never crash the analysis
                     return {"error": f"{type(e).__name__}: {e}"[:300]}
             llm = res(fo) if fo else None
             llm_local = res(fl) if fl else None
         if llm is not None:
-            reviews.append((f"Revisión LLM ({llm_review.MODEL}, sin herramientas)", llm))
+            reviews.append((f"LLM review ({llm_review.MODEL}, no tools)", llm))
         if llm_local is not None:
-            reviews.append((f"Segunda opinión: LLM local ({lcfg['model']})", llm_local))
-        # el revisor principal (Opus, o el local si Opus está desactivado) es obligatorio: si falla → mínimo WARN
+            reviews.append((f"Second opinion: local LLM ({lcfg['model']})", llm_local))
+        # the primary reviewer (Opus, or the local one when Opus is disabled) is mandatory: if it fails → at least WARN
         primary = llm if use_opus else llm_local
         if primary is None or "error" in primary:
             verdict = "warn" if verdict == "ok" else verdict
         for title, r in reviews:
             if "error" in r:
-                log(f"      ⚠️  {title}: no disponible: {reveal(r['error'])}")
+                log(f"      ⚠️  {title}: not available: {reveal(r['error'])}")
                 continue
             lv = "block" if r.get("injection_attempt_against_reviewer") else r["verdict"]
             if r is llm_local and use_opus and lcfg.get("weight") != "full":
-                # segunda opinión: su BLOCK obliga a mirar (WARN); su WARN es solo informativo
+                # second opinion: its BLOCK forces a look (WARN); its WARN is informational only
                 lv = "warn" if lv == "block" else "ok"
-                r["weight_note"] = ("Peso de segunda opinión: su BLOCK sube el veredicto como mucho a WARN y su "
-                                    "WARN es solo informativo (GIT_CHECK_LOCAL_WEIGHT=full para igualarlo a Opus).")
+                r["weight_note"] = ("Second-opinion weight: its BLOCK raises the verdict to WARN at most and its "
+                                    "WARN is informational only (GIT_CHECK_LOCAL_WEIGHT=full gives it the same weight as Opus).")
             if lv != "ok" and (verdict == "ok" or SEV_ORDER[lv] > SEV_ORDER[verdict]):
                 verdict = lv
 
@@ -182,15 +182,15 @@ def main(argv=None):
         with open(a.report, "w") as fh:
             fh.write(render_report(name, verdict, findings, reviews, instr, execcfg, targets))
 
-    # resumen en terminal (todo saneado con reveal() en finding())
+    # terminal summary (everything already sanitised by reveal() in finding())
     log("")
-    log(f"  Veredicto: {C[verdict]}{LABEL[verdict]}{C['x']}   "
+    log(f"  Verdict: {C[verdict]}{LABEL[verdict]}{C['x']}   "
         + "  ".join(f"{k}={sum(f['severity'] == k for f in findings)}" for k in ("block", "warn", "info")))
-    for tag, r in (("LLM", llm), ("LLM local (2ª opinión)" if llm is not None else "LLM local", llm_local)):
+    for tag, r in (("LLM", llm), ("local LLM (2nd opinion)" if llm is not None else "local LLM", llm_local)):
         if r and "error" not in r:
             log(f"  {tag}: {r['verdict']}"
                 + (f" ({r['seconds']} s)" if r.get("seconds") is not None else "")
-                + (" ⚠️ intentó manipular al revisor" if r.get("injection_attempt_against_reviewer") else "")
+                + (" ⚠️ tried to manipulate the reviewer" if r.get("injection_attempt_against_reviewer") else "")
                 + f" — {reveal(r.get('summary', ''))[:600]}")
     shown = [f for f in findings if f["severity"] != "info"][:25]
     for f in shown:
@@ -198,7 +198,7 @@ def main(argv=None):
         log(f"   {C[f['severity']]}{f['severity']:5}{C['x']} {loc} — {f['message']}")
     rest = sum(f["severity"] != "info" for f in findings) - len(shown)
     if rest > 0:
-        log(f"   … y {rest} más (ver informe)")
+        log(f"   … and {rest} more (see report)")
     return EXIT[verdict]
 
 

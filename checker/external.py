@@ -1,7 +1,7 @@
-"""Integración con escáneres externos (opcionales): semgrep, guarddog, osv-scanner.
+"""Integration with (optional) external scanners: semgrep, guarddog, osv-scanner.
 
-Todos se ejecutan con cwd en un directorio temporal vacío, para que no lean
-ficheros de configuración/ignore plantados en el repo analizado.
+They all run with cwd set to an empty temporary directory, so they don't pick up
+config/ignore files planted in the repo being analyzed.
 """
 from __future__ import annotations
 
@@ -40,13 +40,13 @@ def _run(cmd, timeout):
 def semgrep(root):
     exe = _which("semgrep")
     if not exe:
-        return [finding("info", PHASE, "tool-missing", "-", "semgrep no instalado")]
+        return [finding("info", PHASE, "tool-missing", "-", "semgrep not installed")]
     try:
         p = _run([exe, "scan", "--config", RULES, "--metrics=off", "--json", "--quiet", "--no-git-ignore",
                   "--disable-version-check", "--timeout", "20", "--max-target-bytes", "2000000", root], 600)
         data = json.loads(p.stdout or "{}")
     except Exception as e:
-        return [finding("warn", PHASE, "tool-error", "-", f"semgrep falló: {e}")]
+        return [finding("warn", PHASE, "tool-error", "-", f"semgrep failed: {e}")]
     sevmap = {"ERROR": "block", "WARNING": "warn", "INFO": "info"}
     out = []
     for r in data.get("results", []):
@@ -60,11 +60,11 @@ def semgrep(root):
 def guarddog(root, ecosystems):
     exe = _which("guarddog")
     if not exe:
-        return [finding("info", PHASE, "tool-missing", "-", "guarddog no instalado")]
+        return [finding("info", PHASE, "tool-missing", "-", "guarddog not installed")]
     out = []
     for eco in ecosystems:
         data = None
-        for sandbox in ("--sandbox", "--no-sandbox"):  # el sandbox de kernel puede no estar disponible
+        for sandbox in ("--sandbox", "--no-sandbox"):  # the kernel sandbox may not be available
             try:
                 p = _run([exe, eco, "scan", root, "--output-format", "json", sandbox], 600)
                 data = json.loads(p.stdout or "null")
@@ -73,7 +73,7 @@ def guarddog(root, ecosystems):
             except Exception:
                 continue
         if not isinstance(data, dict):
-            out.append(finding("warn", PHASE, "tool-error", "-", f"guarddog {eco} no produjo resultado"))
+            out.append(finding("warn", PHASE, "tool-error", "-", f"guarddog {eco} produced no result"))
             continue
         for rule, res in (data.get("results") or {}).items():
             if not res:
@@ -100,12 +100,12 @@ def guarddog(root, ecosystems):
 def osv(root):
     exe = _which("osv-scanner")
     if not exe:
-        return [finding("info", PHASE, "tool-missing", "-", "osv-scanner no instalado")]
+        return [finding("info", PHASE, "tool-missing", "-", "osv-scanner not installed")]
     try:
         p = _run([exe, "scan", "source", "-r", "--format", "json", root], 300)
         data = json.loads(p.stdout or "{}")
     except Exception as e:
-        return [finding("info", PHASE, "tool-error", "-", f"osv-scanner falló: {e}")]
+        return [finding("info", PHASE, "tool-error", "-", f"osv-scanner failed: {e}")]
     out, vuln_pkgs = [], []
     for res in data.get("results") or []:
         src = os.path.relpath(res.get("source", {}).get("path", root), root)
@@ -116,12 +116,12 @@ def osv(root):
             name = f"{info.get('ecosystem')}/{info.get('name')}@{info.get('version')}"
             if mal:
                 out.append(finding("block", PHASE, "osv-malicious-package", src,
-                                   f"Dependencia MALICIOSA conocida: {name} ({', '.join(mal)})"))
+                                   f"Known MALICIOUS dependency: {name} ({', '.join(mal)})"))
             elif ids:
                 vuln_pkgs.append(f"{name} ({len(ids)})")
     if vuln_pkgs:
         out.append(finding("info", PHASE, "osv-vulns", "-",
-                           f"{len(vuln_pkgs)} dependencias con CVEs conocidos: " + ", ".join(vuln_pkgs[:15])))
+                           f"{len(vuln_pkgs)} dependencies with known CVEs: " + ", ".join(vuln_pkgs[:15])))
     return out
 
 
